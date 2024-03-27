@@ -25,31 +25,35 @@
 package net.runelite.client.plugins.hunter;
 
 import com.google.inject.Provides;
+
+import java.awt.image.BufferedImage;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.inject.Inject;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.Client;
-import net.runelite.api.GameObject;
-import net.runelite.api.ObjectID;
-import net.runelite.api.Player;
-import net.runelite.api.Tile;
+import net.runelite.api.*;
 import net.runelite.api.coords.Angle;
 import net.runelite.api.coords.Direction;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameObjectSpawned;
 import net.runelite.api.events.GameTick;
 import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
+import net.runelite.client.util.Text;
 
 @Slf4j
 @PluginDescriptor(
@@ -66,6 +70,12 @@ public class HunterPlugin extends Plugin
 	private OverlayManager overlayManager;
 
 	@Inject
+	private InfoBoxManager infoBoxManager;
+
+	@Inject
+	private ItemManager itemManager;
+
+	@Inject
 	private TrapOverlay overlay;
 
 	@Inject
@@ -78,6 +88,17 @@ public class HunterPlugin extends Plugin
 	private final Map<WorldPoint, HunterTrap> traps = new HashMap<>();
 
 	private WorldPoint lastTickLocalPlayerLocation;
+
+	private static final Pattern RUMOUR_QUETZAL_PATTERN = Pattern.compile(
+			"Your current rumour target is a (.*)\\. You'll need to bring back \\.*.");
+
+	private static final Pattern RUMOUR_REMAINDER_ME_PATTERN = Pattern.compile(
+			"(.*) \\(.*\\)\\|You're hunting for me at the moment\\. This rumour was about a (.*)\\. You'll need to bring back.*\\.");
+
+	private static final Pattern RUMOUR_REMAINDER_OTHER_PATTERN = Pattern.compile(
+			"(.*) \\(.*\\)\\|I hear you're hunting for (.*)\\. Aren't you looking for a (.*) at the moment\\? You'll need to bring back.*\\.");
+
+	private RumourInfoBox rumourInfoBox;
 
 	@Provides
 	HunterConfig provideConfig(ConfigManager configManager)
@@ -97,6 +118,47 @@ public class HunterPlugin extends Plugin
 	{
 		overlayManager.remove(overlay);
 		traps.clear();
+	}
+
+	@Subscribe
+	public void onChatMessage(ChatMessage event)
+	{
+		switch(event.getType()) {
+			case GAMEMESSAGE:
+				String gameMessage = Text.removeTags(event.getMessage());
+
+				Matcher isQuetzalCheck = RUMOUR_QUETZAL_PATTERN.matcher(gameMessage);
+
+				if (isQuetzalCheck.find()) {
+					String creatureName = isQuetzalCheck.group(1);
+					log.info("Your new rumour is {}", creatureName);
+
+					setupInfobox(creatureName, null);
+				}
+
+			case DIALOG:
+				String dialogMessage = Text.removeTags(event.getMessage());
+				Matcher isMeRemainderCheck = RUMOUR_REMAINDER_ME_PATTERN.matcher(dialogMessage);
+				Matcher isOtherRemainderCheck = RUMOUR_REMAINDER_OTHER_PATTERN.matcher(dialogMessage);
+
+				if (isMeRemainderCheck.find())
+				{
+					String master = isMeRemainderCheck.group(1);
+					String creatureName = isMeRemainderCheck.group(2);
+					log.info("Your rumour is {} for {}", creatureName, master);
+
+					setupInfobox(creatureName, master);
+				}
+				else if (isOtherRemainderCheck.find())
+				{
+					String master = isOtherRemainderCheck.group(2);
+					String creatureName = isOtherRemainderCheck.group(3);
+					log.info("Your rumour is {} for {}.", creatureName, master);
+
+					setupInfobox(creatureName, master);
+				}
+		}
+
 	}
 
 	@Subscribe
@@ -393,5 +455,25 @@ public class HunterPlugin extends Plugin
 		{
 			overlay.updateConfig();
 		}
+	}
+
+	private void setupInfobox(String creatureName, String masterName)
+	{
+		Rumour rumour = Rumour.getRumour(creatureName);
+		RumourMaster master = RumourMaster.getMaster(masterName);
+
+		if (rumourInfoBox != null) {
+			removeInfobox();
+		}
+
+		final BufferedImage image = itemManager.getImage(rumour.getCreatureSpriteId(), 5, false);
+		rumourInfoBox = new RumourInfoBox(image, this, rumour, master);
+		infoBoxManager.addInfoBox(rumourInfoBox);
+	}
+
+	private void removeInfobox()
+	{
+		infoBoxManager.removeInfoBox(rumourInfoBox);
+		rumourInfoBox = null;
 	}
 }
